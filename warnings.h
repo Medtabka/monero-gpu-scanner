@@ -1,0 +1,8 @@
+#pragma once
+#define DISABLE_VS_WARNINGS(...)
+#define ENABLE_VS_WARNINGS(...)
+#define DISABLE_GCC_WARNING(...)
+#define DISABLE_CLANG_WARNING(...)
+#define DISABLE_GCC_AND_CLANG_WARNING(...)
+#define PUSH_WARNINGS
+#define POP_WARNINGS
