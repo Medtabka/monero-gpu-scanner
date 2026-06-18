@@ -236,6 +236,7 @@ __global__ void k_check_sub(int n_out,
                             const unsigned char *keys,
                             const unsigned char *vtf, const unsigned char *vt,
                             const unsigned char *D, const unsigned char *okD,
+                            const unsigned char *radd, const unsigned char *hasadd,
                             const unsigned char *sub_keys, unsigned sub_n,
                             uint64_t *hits, unsigned *n_hits, unsigned hit_cap,
                             unsigned long long *checked,
@@ -248,26 +249,41 @@ __global__ void k_check_sub(int n_out,
   int g = blockIdx.x * blockDim.x + threadIdx.x;
   if (g < n_out) {
     uint32_t tx = out_tx[g];
+    unsigned i = out_idx[g];
+    const unsigned char *key = keys + 32ll * g;
+    int vtf_g = vtf[g];
+    unsigned char vt_g = vt[g];
+    int hit = -1;
+
+    /* (1) main tx pubkey derivation (precomputed per tx in k_derive) */
     if (okD[tx]) {
       atomicAdd(&s_checked, 1u);
       const unsigned char *Dt = D + 32ll * tx;
-      unsigned i = out_idx[g];
-      int pass = 1;
-      if (vtf[g]) {
-        if (d_derive_view_tag(Dt, i) != vt[g]) { atomicAdd(&s_skip, 1u); pass = 0; }
-      }
-      if (pass) {
+      if (!vtf_g || d_derive_view_tag(Dt, i) == vt_g) {
         unsigned char C[32];
-        if (d_derive_sub_candidate(C, Dt, i, keys + 32ll * g)) {
-          int hit = d_table_lookup(sub_keys, sub_n, C);
-          if (hit >= 0) {
-            atomicAdd(&s_found, 1u);
-            unsigned slot = atomicAdd(n_hits, 1u);
-            if (slot < hit_cap)
-              hits[slot] = ((uint64_t)hit << 32) | (uint32_t)g;
-          }
-        }
+        if (d_derive_sub_candidate(C, Dt, i, key))
+          hit = d_table_lookup(sub_keys, sub_n, C);
       }
+    }
+
+    /* (2) else this output's own additional tx pubkey (extra tag 0x04) */
+    if (hit < 0 && hasadd[g]) {
+      unsigned char Da[32];
+      if (d_gen_derivation(Da, radd + 32ll * g, c_view_priv) &&
+          (!vtf_g || d_derive_view_tag(Da, i) == vt_g)) {
+        unsigned char C[32];
+        if (d_derive_sub_candidate(C, Da, i, key))
+          hit = d_table_lookup(sub_keys, sub_n, C);
+      }
+    }
+
+    if (hit >= 0) {
+      atomicAdd(&s_found, 1u);
+      unsigned slot = atomicAdd(n_hits, 1u);
+      if (slot < hit_cap)
+        hits[slot] = ((uint64_t)hit << 32) | (uint32_t)g;
+    } else if (vtf_g) {
+      atomicAdd(&s_skip, 1u);
     }
   }
   __syncthreads();
@@ -314,6 +330,8 @@ typedef struct {
   int sub_mode;
   unsigned char *d_sub_keys;
   uint32_t sub_n, *sub_maj, *sub_min;     /* maj/min stay host-side */
+  unsigned char *radd, *hasadd;           /* host: per-output additional pubkey + flag */
+  unsigned char *d_radd, *d_hasadd;       /* device copies (sub mode) */
 } ctx_t;
 
 static uint32_t *g_heights;       /* per output (whole file), for printing */
@@ -337,6 +355,10 @@ static void flush_chunk(ctx_t *c) {
   CUDA_CHECK(cudaMemcpy(c->d_keys, c->keys, 32ull * c->n_out, cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(c->d_vtf, c->vtf, c->n_out, cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(c->d_vt, c->vt, c->n_out, cudaMemcpyHostToDevice));
+  if (c->sub_mode) {
+    CUDA_CHECK(cudaMemcpy(c->d_radd, c->radd, 32ull * c->n_out, cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(c->d_hasadd, c->hasadd, c->n_out, cudaMemcpyHostToDevice));
+  }
   CUDA_CHECK(cudaMemset(c->d_nhits, 0, 4));
   double t1 = now_s(); t_h2d += t1 - t0;
 
@@ -353,7 +375,7 @@ static void flush_chunk(ctx_t *c) {
     k_check_sub<<<(unsigned)((nchk + B - 1) / B), B>>>(c->n_out,
         c->d_out_tx, c->d_out_idx,
         c->d_keys, c->d_vtf, c->d_vt, c->dD, c->dokD,
-        c->d_sub_keys, c->sub_n,
+        c->d_radd, c->d_hasadd, c->d_sub_keys, c->sub_n,
         c->d_hits, c->d_nhits, HIT_CAP,
         c->d_counters, c->d_counters + 1, c->d_counters + 2);
   else
@@ -481,7 +503,10 @@ int main(int argc, char **argv) {
   unsigned char *buf = (unsigned char *)malloc(fsize);
   if (fread(buf, 1, fsize, f) != (size_t)fsize) { fprintf(stderr, "read fail\n"); return 1; }
   fclose(f);
-  if (fsize < 8 || memcmp(buf, "XMRSCAN1", 8)) { fprintf(stderr, "bad magic\n"); return 1; }
+  int ver = 0;
+  if (fsize >= 8 && !memcmp(buf, "XMRSCAN1", 8)) ver = 1;
+  else if (fsize >= 8 && !memcmp(buf, "XMRSCAN2", 8)) ver = 2;
+  else { fprintf(stderr, "bad magic\n"); return 1; }
   double t_read = now_s() - t_start;
 
   /* chunk capacities scale down with wallet count to fit the D buffer */
@@ -516,6 +541,10 @@ int main(int argc, char **argv) {
     CUDA_CHECK(cudaMalloc(&c.d_sub_keys, 32ull * sub_n));
     CUDA_CHECK(cudaMemcpy(c.d_sub_keys, sub_keys, 32ull * sub_n,
                           cudaMemcpyHostToDevice));
+    c.radd = (unsigned char *)malloc(32ull * c.out_cap);
+    c.hasadd = (unsigned char *)malloc(c.out_cap);
+    CUDA_CHECK(cudaMalloc(&c.d_radd, 32ull * c.out_cap));
+    CUDA_CHECK(cudaMalloc(&c.d_hasadd, c.out_cap));
   }
   CUDA_CHECK(cudaMalloc(&c.d_counters, 3 * 8));
   CUDA_CHECK(cudaMemset(c.d_counters, 0, 3 * 8));
@@ -535,11 +564,24 @@ int main(int argc, char **argv) {
   g_idx = (uint8_t *)malloc(heights_cap);
 
   size_t p = 8;
-  while (p + 5 + 32 <= (size_t)fsize) {
+  while (p + 5 <= (size_t)fsize) {
     uint32_t height; memcpy(&height, buf + p, 4);
     unsigned n_out = buf[p + 4];
-    const unsigned char *R = buf + p + 5;
-    size_t rec_end = p + 5 + 32 + 34ull * n_out;
+    size_t q = p + 5;
+    unsigned char flags = 0;
+    if (ver == 2) {
+      if (q + 1 > (size_t)fsize) { fprintf(stderr, "truncated\n"); return 1; }
+      flags = buf[q]; q += 1;
+    }
+    if (q + 32 > (size_t)fsize) { fprintf(stderr, "truncated\n"); return 1; }
+    const unsigned char *R = buf + q; q += 32;
+    int has_add = (flags & 1);
+    const unsigned char *radd = NULL;
+    if (has_add) {
+      if (q + 32ull * n_out > (size_t)fsize) { fprintf(stderr, "truncated\n"); return 1; }
+      radd = buf + q; q += 32ull * n_out;
+    }
+    size_t rec_end = q + 34ull * n_out;
     if (rec_end > (size_t)fsize) { fprintf(stderr, "truncated\n"); return 1; }
 
     if (c.n_tx + 1 > c.tx_cap || c.n_out + n_out > c.out_cap) flush_chunk(&c);
@@ -547,7 +589,7 @@ int main(int argc, char **argv) {
     uint32_t tx_local = c.n_tx;
     memcpy(c.R + 32ull * c.n_tx, R, 32);
     c.n_tx++;
-    const unsigned char *rec = buf + p + 5 + 32;
+    const unsigned char *rec = buf + q;
     for (unsigned i = 0; i < n_out; i++, rec += 34) {
       unsigned o = c.n_out;
       c.out_tx[o] = tx_local;
@@ -555,6 +597,10 @@ int main(int argc, char **argv) {
       memcpy(c.keys + 32ull * o, rec, 32);
       c.vtf[o] = rec[32];
       c.vt[o] = rec[33];
+      if (c.sub_mode) {
+        if (has_add) { memcpy(c.radd + 32ull * o, radd + 32ull * i, 32); c.hasadd[o] = 1; }
+        else c.hasadd[o] = 0;
+      }
       c.n_out++;
       if (total_out == heights_cap) {
         heights_cap *= 2;

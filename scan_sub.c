@@ -139,9 +139,11 @@ int main(int argc, char **argv) {
   FILE *f = fopen(argv[2], "rb");
   if (!f) { perror("open"); return 1; }
   unsigned char magic[8];
-  if (fread(magic, 1, 8, f) != 8 || memcmp(magic, "XMRSCAN1", 8)) {
-    fprintf(stderr, "bad magic\n"); return 1;
-  }
+  int ver = 0;
+  if (fread(magic, 1, 8, f) != 8) { fprintf(stderr, "bad magic\n"); return 1; }
+  if (!memcmp(magic, "XMRSCAN1", 8)) ver = 1;
+  else if (!memcmp(magic, "XMRSCAN2", 8)) ver = 2;
+  else { fprintf(stderr, "bad magic\n"); return 1; }
 
   uint64_t checked = 0, vt_skipped = 0, found = 0;
   double t0 = (double)clock() / CLOCKS_PER_SEC;
@@ -150,27 +152,49 @@ int main(int argc, char **argv) {
     if (fread(hdr, 1, 5, f) != 5) break;
     uint32_t height; memcpy(&height, hdr, 4);
     unsigned n_out = hdr[4];
+    unsigned char flags = 0;
+    if (ver == 2 && fread(&flags, 1, 1, f) != 1) { fprintf(stderr, "truncated\n"); return 1; }
     unsigned char R[32];
     if (fread(R, 1, 32, f) != 32) { fprintf(stderr, "truncated\n"); return 1; }
+    int has_add = (flags & 1);
+    unsigned char radd[255][32];   /* additional tx pubkeys (tag 0x04), one per output */
+    if (has_add && fread(radd, 32, n_out, f) != n_out) {
+      fprintf(stderr, "truncated\n"); return 1;
+    }
 
     unsigned char D[32];
-    int okD = gen_derivation(D, R, a);
+    int okD = gen_derivation(D, R, a);   /* derivation from the main tx pubkey */
 
     for (unsigned i = 0; i < n_out; i++) {
       unsigned char rec[34];
       if (fread(rec, 1, 34, f) != 34) { fprintf(stderr, "truncated\n"); return 1; }
-      if (!okD) continue;
-      checked++;
-      if (rec[32]) {
-        if (derive_view_tag(D, i) != rec[33]) { vt_skipped++; continue; }
-      }
+      int vtf = rec[32];
+      unsigned char vt = rec[33];
       unsigned char C[32];
-      if (!derive_subaddress_candidate(C, D, i, rec)) continue;
-      int hit = table_lookup(&tab, C);
+      int hit = -1;
+
+      /* (1) try the main tx pubkey — change/standard outputs use this */
+      if (okD && (!vtf || derive_view_tag(D, i) == vt) &&
+          derive_subaddress_candidate(C, D, i, rec))
+        hit = table_lookup(&tab, C);
+
+      /* (2) else try this output's own additional tx pubkey (tag 0x04) —
+       * how a tx paying multiple distinct subaddresses is scanned */
+      if (hit < 0 && has_add) {
+        unsigned char Da[32];
+        if (gen_derivation(Da, radd[i], a) &&
+            (!vtf || derive_view_tag(Da, i) == vt) &&
+            derive_subaddress_candidate(C, Da, i, rec))
+          hit = table_lookup(&tab, C);
+      }
+
+      if (okD || has_add) checked++;
       if (hit >= 0) {
         found++;
         printf("OWNED: height %u, output %u, subaddr %u/%u\n",
                height, i, tab.maj[hit], tab.min[hit]);
+      } else if (vtf) {
+        vt_skipped++;
       }
     }
   }

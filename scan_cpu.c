@@ -106,16 +106,25 @@ static int scan_file(FILE *f, const unsigned char view_priv[32],
                      /* optional capture of found (height,out_idx) pairs */
                      uint64_t *found_list, size_t found_cap, size_t *found_n) {
   unsigned char magic[8];
-  if (fread(magic, 1, 8, f) != 8 || memcmp(magic, "XMRSCAN1", 8)) {
-    fprintf(stderr, "bad magic\n"); return 0;
-  }
+  int ver = 0;
+  if (fread(magic, 1, 8, f) != 8) { fprintf(stderr, "bad magic\n"); return 0; }
+  if (!memcmp(magic, "XMRSCAN1", 8)) ver = 1;
+  else if (!memcmp(magic, "XMRSCAN2", 8)) ver = 2;
+  else { fprintf(stderr, "bad magic\n"); return 0; }
   for (;;) {
     unsigned char hdr[5];
     if (fread(hdr, 1, 5, f) != 5) break;        /* EOF */
     uint32_t height; memcpy(&height, hdr, 4);
     unsigned n_out = hdr[4];
+    unsigned char flags = 0;
+    if (ver == 2 && fread(&flags, 1, 1, f) != 1) { fprintf(stderr, "truncated\n"); return 0; }
     unsigned char R[32];
     if (fread(R, 1, 32, f) != 32) { fprintf(stderr, "truncated\n"); return 0; }
+    /* primary-address scan ignores additional tx pubkeys (tag 0x04 is for
+     * subaddress outputs); skip the array if present. */
+    if ((flags & 1) && fseek(f, 32L * n_out, SEEK_CUR) != 0) {
+      fprintf(stderr, "truncated\n"); return 0;
+    }
 
     unsigned char D[32];
     int okD = gen_derivation(D, R, view_priv);
