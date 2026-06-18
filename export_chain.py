@@ -10,8 +10,10 @@ Usage:
 (38081 = stagenet RPC port; mainnet is 18081.)
 
 Record format (little-endian):
-  magic "XMRSCAN1"
-  then per tx: u32 height | u8 n_out | R[32] | n_out*( key[32] | vt_flag u8 | vt u8 )
+  magic "XMRSCAN2"
+  then per tx: u32 height | u8 n_out | u8 flags | R[32]
+               if flags&1: n_out*R_add[32]   (additional pubkeys, extra tag 0x04)
+               n_out*( key[32] | vt_flag u8 | vt u8 )
 
 Notes:
 - includes coinbase (miner) txs.
@@ -41,11 +43,11 @@ def other(url, path, body):
         return json.load(r)
 
 def parse_extra(extra_bytes):
-    """Return tx pubkey (32 bytes) or None. Tags per cryptonote_basic:
+    """Return (tx pubkey or None, [additional pubkeys]). Tags per cryptonote_basic:
     0x00 padding, 0x01 pubkey, 0x02 nonce, 0x03 merge-mining, 0x04 additional
     pubkeys, 0xDE minergate. Stop on unknown tag."""
     b = bytes(extra_bytes)
-    i, pub = 0, None
+    i, pub, addl = 0, None, []
     def varint(i):
         v = s = 0
         while True:
@@ -69,14 +71,16 @@ def parse_extra(extra_bytes):
                 _, i = varint(i)              # depth
                 i += 32                       # merkle root
             except IndexError: break
-        elif tag == 0x04:
+        elif tag == 0x04:                     # additional pubkeys, one per output
             try:
                 n, i = varint(i)
-                i += 32 * n
+                for _ in range(n):
+                    if i + 32 > len(b): break
+                    addl.append(b[i:i+32]); i += 32
             except IndexError: break
         else:
             break                             # unknown tag: stop parsing
-    return pub
+    return pub, addl
 
 def outputs_of(tx_json):
     """Yield (key32, vt_flag, vt) per vout entry."""
@@ -89,10 +93,17 @@ def outputs_of(tx_json):
             yield bytes.fromhex(tgt["key"]), 0, 0
         # other target types (rare/none on modern chain) are skipped
 
-def write_record(f, height, pub, outs):
+def write_record(f, height, pub, addl, outs):
     outs = outs[:255]
-    f.write(struct.pack("<IB", height, len(outs)))
+    n = len(outs)
+    # tag-0x04 additional pubkeys: one per output, present only when the tx
+    # pays multiple distinct subaddresses. Require full alignment with outs.
+    has_add = 1 if (n > 0 and len(addl) >= n) else 0
+    f.write(struct.pack("<IBB", height, n, has_add))
     f.write(pub)
+    if has_add:
+        for i in range(n):
+            f.write(addl[i])
     for key, flag, vt in outs:
         f.write(key + bytes([flag, vt]))
 
@@ -110,7 +121,7 @@ def main():
 
     n_tx = n_skip = 0
     with open(a.out, "wb") as f:
-        f.write(b"XMRSCAN1")
+        f.write(b"XMRSCAN2")
         for h in range(a.h0, h1 + 1):
             blk = rpc(a.rpc, "get_block", {"height": h})
             bj = json.loads(blk["json"])
@@ -124,12 +135,12 @@ def main():
                 for t in r.get("txs", []):
                     txs.append(json.loads(t["as_json"]))
             for tj in txs:
-                pub = parse_extra(tj.get("extra", []))
+                pub, addl = parse_extra(tj.get("extra", []))
                 outs = list(outputs_of(tj))
                 if pub is None or not outs:
                     n_skip += 1
                     continue
-                write_record(f, h, pub, outs)
+                write_record(f, h, pub, addl, outs)
                 n_tx += 1
             if h % 1000 == 0:
                 print(f"  height {h}, txs written {n_tx}", flush=True)

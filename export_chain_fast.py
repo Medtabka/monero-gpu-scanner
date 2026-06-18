@@ -40,9 +40,9 @@ def fetch_block(url, h):
             txs.append(json.loads(t["as_json"]))
     recs = []
     for tj in txs:
-        pub = ec.parse_extra(tj.get("extra", []))
+        pub, addl = ec.parse_extra(tj.get("extra", []))
         outs = list(ec.outputs_of(tj))
-        recs.append((pub, outs))
+        recs.append((pub, addl, outs))
     return recs
 
 def main():
@@ -62,7 +62,7 @@ def main():
     n_tx = n_skip = 0
     window = a.workers * 4
     with open(a.out, "wb") as f, ThreadPoolExecutor(a.workers) as pool:
-        f.write(b"XMRSCAN1")
+        f.write(b"XMRSCAN2")
         pending = collections.deque()
         next_submit = a.h0
         for h in range(a.h0, h1 + 1):
@@ -70,11 +70,11 @@ def main():
                 pending.append(pool.submit(fetch_block, a.rpc, next_submit))
                 next_submit += 1
             recs = pending.popleft().result()
-            for pub, outs in recs:
+            for pub, addl, outs in recs:
                 if pub is None or not outs:
                     n_skip += 1
                     continue
-                ec.write_record(f, h, pub, outs)
+                ec.write_record(f, h, pub, addl, outs)
                 n_tx += 1
             if h % 10000 == 0:
                 print(f"  height {h}, txs written {n_tx}", flush=True)
