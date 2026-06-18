@@ -51,7 +51,7 @@ rate (the `monero-lws` worker shape).
 ## Build
 
 Requirements: Linux (native or WSL2), `gcc`, `python3`, and — for the GPU
-scanner — an NVIDIA GPU with CUDA toolkit 12.x (`nvcc`).
+scanner — an NVIDIA GPU with CUDA toolkit 12.x or 13.x (`nvcc`).
 
 ```sh
 make            # builds everything (CPU tools + gpu_scan)
