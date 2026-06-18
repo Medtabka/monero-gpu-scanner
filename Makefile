@@ -57,7 +57,11 @@ test: scan_cpu
 gputest: scan_cpu gpu_scan keys_for_seed
 	./gputest.sh
 
+# gate: subaddress GPU == CPU == planted, including tag-0x04 multi-subaddress txs
+gputest_sub: scan_sub subaddr_table gen_bench_sub gpu_scan keys_for_seed
+	./gputest_sub.sh
+
 clean:
 	rm -f $(CPU_BINS) $(GPU_BINS) device_crypto.inc
 
-.PHONY: all cpu gpu test gputest clean
+.PHONY: all cpu gpu test gputest gputest_sub clean

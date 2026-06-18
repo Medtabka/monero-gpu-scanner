@@ -130,12 +130,67 @@ int main(int argc, char **argv) {
   FILE *f = fopen(argv[3], "wb");
   if (!f) { perror("open"); return 1; }
   setvbuf(f, NULL, _IOFBF, 1 << 20);
-  fwrite("XMRSCAN1", 1, 8, f);
+  fwrite("XMRSCAN2", 1, 8, f);
 
   long planted = 0;
   for (long x = 0; x < n_tx; x++) {
     unsigned n_out = 2 + (unsigned)(splitmix() % 3);
-    int plant = (splitmix() % 1000 == 0);
+    uint32_t height = (uint32_t)x;
+
+    int multi = (splitmix() % 1500 == 0);              /* tx paying 2 subaddrs (tag 0x04) */
+    int plant = (!multi) && (splitmix() % 1000 == 0);  /* single-destination plant */
+
+    if (multi) {
+      /* Main tx pubkey = r*G (the change/standard slot); every output also
+       * carries its own additional pubkey (tag 0x04). Two outputs are planted
+       * to two distinct subaddresses via their additional keys; rest decoys. */
+      unsigned char r[32], Rmain[32];
+      rand_scalar(r); ge_scalarmult_base(&t, r); ge_p3_tobytes(Rmain, &t);
+
+      unsigned ia = (unsigned)(splitmix() % n_out);
+      unsigned ib = (ia + 1 + (unsigned)(splitmix() % (n_out - 1))) % n_out;
+      uint32_t sa = (uint32_t)(1 + splitmix() % (MAJ_N * MIN_N - 1));  /* nonzero => real subaddr */
+      uint32_t sb = (uint32_t)(1 + splitmix() % (MAJ_N * MIN_N - 1));
+      uint32_t ma = sa / MIN_N, na = sa % MIN_N, mb = sb / MIN_N, nb = sb % MIN_N;
+
+      unsigned char radd[255][32], rec[255][34], Da[32], Db[32], ra[32], rb[32];
+      ge_p3 Bs, Rp;
+      rand_scalar(ra);                                  /* plant a: R_add = ra*B_sub_a */
+      ge_frombytes_vartime(&Bs, Bsub[ma][na]);
+      ge_scalarmult_p3(&Rp, ra, &Bs); ge_p3_tobytes(radd[ia], &Rp);
+      gen_derivation(Da, Asub[ma][na], ra);
+      rand_scalar(rb);                                  /* plant b: R_add = rb*B_sub_b */
+      ge_frombytes_vartime(&Bs, Bsub[mb][nb]);
+      ge_scalarmult_p3(&Rp, rb, &Bs); ge_p3_tobytes(radd[ib], &Rp);
+      gen_derivation(Db, Asub[mb][nb], rb);
+
+      for (unsigned i = 0; i < n_out; i++) {
+        if (i == ia) {
+          derive_public_key(rec[i], Da, i, Bsub[ma][na]);
+          rec[i][33] = derive_view_tag(Da, i);
+          printf("PLANTED: height %u, output %u, subaddr %u/%u\n", height, i, ma, na);
+          planted++;
+        } else if (i == ib) {
+          derive_public_key(rec[i], Db, i, Bsub[mb][nb]);
+          rec[i][33] = derive_view_tag(Db, i);
+          printf("PLANTED: height %u, output %u, subaddr %u/%u\n", height, i, mb, nb);
+          planted++;
+        } else {                                        /* decoy key + decoy additional key */
+          for (int k = 0; k < 32; k += 8) { uint64_t v = splitmix(); memcpy(rec[i] + k, &v, 8); }
+          rec[i][33] = (unsigned char)(splitmix() & 0xFF);
+          for (int k = 0; k < 32; k += 8) { uint64_t v = splitmix(); memcpy(radd[i] + k, &v, 8); }
+        }
+        rec[i][32] = 1;
+      }
+
+      unsigned char hdr[5], flags = 1;
+      memcpy(hdr, &height, 4); hdr[4] = (unsigned char)n_out;
+      fwrite(hdr, 1, 5, f); fwrite(&flags, 1, 1, f); fwrite(Rmain, 1, 32, f);
+      fwrite(radd, 32, n_out, f);
+      fwrite(rec, 34, n_out, f);
+      continue;
+    }
+
     unsigned plant_idx = plant ? (unsigned)(splitmix() % n_out) : 0;
     uint32_t maj = (uint32_t)(splitmix() % MAJ_N);
     uint32_t min = (uint32_t)(splitmix() % MIN_N);
@@ -154,9 +209,9 @@ int main(int argc, char **argv) {
       if (plant && !gen_derivation(Dsender, A, r)) plant = 0;     /* 8*r*A */
     }
 
-    uint32_t height = (uint32_t)x;
-    unsigned char hdr[5]; memcpy(hdr, &height, 4); hdr[4] = (unsigned char)n_out;
-    fwrite(hdr, 1, 5, f); fwrite(R, 1, 32, f);
+    unsigned char hdr[5], flags = 0;
+    memcpy(hdr, &height, 4); hdr[4] = (unsigned char)n_out;
+    fwrite(hdr, 1, 5, f); fwrite(&flags, 1, 1, f); fwrite(R, 1, 32, f);
 
     for (unsigned i = 0; i < n_out; i++) {
       unsigned char rec[34];
