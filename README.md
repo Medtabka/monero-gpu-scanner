@@ -149,6 +149,10 @@ All gates green (as of 2026-06-10):
 | End-to-end vs real stagenet faucet wallet | scanners found exactly the wallet's outputs |
 | Determinism / malformed input | repeated runs byte-identical; bad magic & truncation rejected cleanly |
 
+Re-verified 2026-06-18 on a clean build (Ubuntu 26.04, gcc 15, CUDA 13.3, RTX
+4080 SUPER): 10/10 CPU self-test, 10/10 `make gputest`, and the full real chain
+returned the expected outputs.
+
 **The one rule:** `scan_cpu.c`'s results are correct by definition. Every change
 to GPU code must keep `make gputest` green. A mismatch is a GPU bug — no
 exceptions.
