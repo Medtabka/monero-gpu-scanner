@@ -1,5 +1,7 @@
 # gpu-scan-kit
 
+[![CI](https://github.com/Medtabka/monero-gpu-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/Medtabka/monero-gpu-scanner/actions/workflows/ci.yml)
+
 **GPU-accelerated Monero wallet output scanning.** Given only a wallet's
 **private view key** and **public spend key**, find every on-chain output that
 belongs to it — the exact workload of a wallet restore / rescan and of
