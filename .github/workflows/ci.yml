@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  cpu-tests:
+    name: Build + self-test (CPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: sudo apt-get update && sudo apt-get install -y build-essential python3
+
+      - name: Build CPU tools
+        run: make cpu
+
+      - name: Run 10 seeded self-tests
+        run: make test
+
+# Note: the GPU gate (`make gputest`) needs an NVIDIA GPU + CUDA toolkit, which
+# GitHub-hosted runners don't have. CI builds the CPU tools and runs the 10x
+# self-test; the GPU==CPU byte-identical gate is run locally before release.
