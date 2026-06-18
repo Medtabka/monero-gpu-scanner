@@ -1,0 +1,4 @@
+# This project builds and runs on Linux — keep LF endings everywhere so
+# shell scripts and the Makefile work when cloned on any platform.
+* text=auto eol=lf
+*.bin binary
