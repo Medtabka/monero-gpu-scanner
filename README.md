@@ -126,6 +126,10 @@ chain: 491 MB, 4,107,343 txs, 9,986,034 outputs.
 | **ratio** | | **~220× end-to-end, ~298× kernel-only** |
 | `gpu_scan scanmulti`, 64 wallets × ~3M outputs | 33.3 s | **5.77M wallet-checks/s** |
 
+Also measured on an **RTX 4080 SUPER** (sm_89, CUDA 13.3, gcc 15, WSL2): the
+same full chain scanned in **1.33 s (7.5M outputs/s)**, returning the identical
+owned set.
+
 ~80% of GPU time is `k_derive` (the unavoidable per-tx scalar mult); batching
 wallets amortizes everything else. Mainnet (~120M outputs) projects to minutes
 on the GPU versus hours per CPU core.
