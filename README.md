@@ -65,8 +65,10 @@ make ARCH=sm_89 # set your GPU arch (RTX 40xx=sm_89, 30xx=sm_86, 20xx=sm_75,
 ## Verify (no node needed)
 
 ```sh
-make test       # 10 seeded CPU self-tests — all must say PASS
-make gputest    # GPU found-set == CPU found-set on every fixture
+make test        # 10 seeded CPU self-tests — all must say PASS
+make gputest     # GPU found-set == CPU found-set on every fixture
+make gputest_sub # subaddress gate, incl. tag-0x04 multi-subaddress txs:
+                 #   GPU == CPU == planted
 ```
 
 The self-test builds a synthetic wallet, plants real outputs to it among
@@ -148,26 +150,33 @@ All gates green (as of 2026-06-10):
 | Multi-wallet: per-wallet GPU sets == per-wallet CPU runs (3-wallet fixture) | identical |
 | 64-wallet batch, 192M wallet-checks | 0 false positives; planted wallet found exactly |
 | Subaddress synthetic (338 plants, 3×4 grid) | planted == CPU == GPU |
+| Subaddress incl. tag-0x04 multi-subaddress txs (`make gputest_sub`) | planted == CPU == GPU |
 | End-to-end vs real stagenet faucet wallet | scanners found exactly the wallet's outputs |
 | Determinism / malformed input | repeated runs byte-identical; bad magic & truncation rejected cleanly |
 
 Re-verified 2026-06-18 on a clean build (Ubuntu 26.04, gcc 15, CUDA 13.3, RTX
-4080 SUPER): 10/10 CPU self-test, 10/10 `make gputest`, and the full real chain
-returned the expected outputs.
+4080 SUPER): 10/10 CPU self-test, 10/10 `make gputest`, `make gputest_sub` green
+(481/481 incl. tag-0x04 outputs), and the full real chain returned the expected
+outputs.
 
 **The one rule:** `scan_cpu.c`'s results are correct by definition. Every change
 to GPU code must keep `make gputest` green. A mismatch is a GPU bug — no
 exceptions.
 
-## File format `XMRSCAN1`
+## File format `XMRSCAN2`
 
 ```
-magic "XMRSCAN1"
-per tx:  u32 height | u8 n_out | R[32] | n_out × ( key[32] | vt_flag u8 | vt u8 )
+magic "XMRSCAN2"
+per tx:  u32 height | u8 n_out | u8 flags | R[32]
+         if flags&1:  n_out × R_add[32]    (additional tx pubkeys, extra tag 0x04)
+         n_out × ( key[32] | vt_flag u8 | vt u8 )
 ```
 
 Little-endian. Includes coinbase txs; txs with no parsable tx pubkey are
-skipped; at most 255 outputs per tx (well above any real tx).
+skipped; at most 255 outputs per tx (well above any real tx). The additional
+pubkey array is present only for transactions that pay multiple distinct
+subaddresses. All readers also accept the older `XMRSCAN1` (no flags byte, no
+additional keys), so existing exports keep working.
 
 ## Repository layout
 
@@ -178,18 +187,18 @@ skipped; at most 255 outputs per tx (well above any real tx).
 | `gen_device_crypto.py` | generates `device_crypto.inc` (ref10 → CUDA, `__device__` only) |
 | `scan_sub.c` | CPU reference for subaddress scanning |
 | `subaddr_table.c` | precompute a subaddress spend-key table |
-| `export_chain.py` / `export_chain_fast.py` | dump a chain from `monerod` RPC to `XMRSCAN1` (sequential / parallel) |
+| `export_chain.py` / `export_chain_fast.py` | dump a chain from `monerod` RPC to `XMRSCAN2` (sequential / parallel) |
 | `gen_bench.c` / `gen_bench_sub.c` | synthetic test chains with planted outputs |
 | `keys_for_seed.c` / `keys_tool.c` | self-test wallet keys / pubkeys + address from private keys |
 | `crypto-ops*.c/.h`, `keccak.*`, `*-util.h`, `warnings.h` | **vendored, unmodified** Monero ref10 + keccak (see `THIRD_PARTY.md`) |
 
 ## Known limitations / next steps
 
-- **Additional tx pubkeys (`extra` tag `0x04`)** — txs paying 2+ distinct
-  subaddress destinations carry one `R` per output; `XMRSCAN1` stores only one
-  per tx, so such outputs are invisible. Needs an `XMRSCAN2` format with
-  optional per-output `R`. This is the main gap for production lws use;
-  single-destination payments (the common case) work.
+- **Additional tx pubkeys (`extra` tag `0x04`)** — *supported* as of the
+  `XMRSCAN2` format: txs paying 2+ distinct subaddresses store one `R` per
+  output, and subaddress scanning tries both the main and the per-output
+  additional derivation (verified by `make gputest_sub`). This was the main gap
+  for production lws use.
 - `scanmulti` and `scansub` are separate modes; combined multi-wallet ×
   subaddress is a straightforward merge.
 - No async H2D/kernel overlap yet (pinned memory + streams would hide the

@@ -118,12 +118,11 @@ Subaddresses / multi-wallet / fresh export: see the [README](README.md).
 
 ## Known limitations / next steps
 
-- **Additional tx pubkeys (extra tag `0x04`)** — txs paying 2+ distinct
-  subaddress destinations carry one `R` per output; `XMRSCAN1` doesn't store
-  them, so such outputs are invisible to the scanner. Needs an `XMRSCAN2`
-  format rev (optional per-output `R`). This is the main gap for production lws
-  use; single-destination subaddress payments (the common case, incl. the
-  faucet test) work.
+- **Additional tx pubkeys (extra tag `0x04`)** — *supported* via the `XMRSCAN2`
+  format: txs paying 2+ distinct subaddresses store one `R` per output, and
+  subaddress scanning tries both the main and the per-output additional
+  derivation. Verified by `make gputest_sub` (GPU == CPU == planted). Readers
+  still accept the older `XMRSCAN1`.
 - `scanmulti` and `scansub` are separate modes; combined multi-wallet×subaddr
   is a straightforward merge (per-wallet table sections).
 - No async H2D/kernel overlap yet (pinned memory + streams ≈ shave the ~0.1 s

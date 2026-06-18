@@ -6,6 +6,13 @@ All notable changes to this project are documented here. Format loosely follows
 ## [Unreleased]
 
 ### Added
+- **Additional tx pubkey support (`extra` tag 0x04).** New `XMRSCAN2` format
+  stores per-output additional pubkeys; subaddress scanning (CPU and GPU) now
+  tries the main and the per-output additional derivation, so outputs from txs
+  paying multiple distinct subaddresses (e.g. exchange batch withdrawals) are
+  found. Readers stay backward-compatible with `XMRSCAN1`. New gate
+  `make gputest_sub` (GPU == CPU == planted, incl. 0x04). Exporters capture and
+  write the additional keys.
 - Continuous integration: GitHub Actions builds the CPU tools and runs the 10x
   self-test on every push.
 - `CONTRIBUTING.md`, `SECURITY.md`, and this changelog.
